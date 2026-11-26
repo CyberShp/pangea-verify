@@ -1,0 +1,39 @@
+{
+  "name": "pangea-verify",
+  "version": "0.1.0",
+  "description": "Clean-room multi-node live verification harness and self-evolving test knowledge engine for PANGEA",
+  "type": "module",
+  "main": "./src/index.js",
+  "bin": {
+    "pangea-verify": "./bin/cli.mjs"
+  },
+  "exports": {
+    ".": "./src/index.js",
+    "./credentials": "./src/credentials.js",
+    "./topology": "./src/topology.js",
+    "./safety-policy": "./src/safety-policy.js",
+    "./transport-ssh": "./src/transport-ssh.js",
+    "./transport-http": "./src/transport-http.js",
+    "./harness": "./src/harness.js",
+    "./knowledge": "./src/knowledge.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "bin",
+    "src",
+    "skills",
+    "tools",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "ssh2": "^1.17.0"
+  },
+  "scripts": {
+    "check": "node --check bin/cli.mjs && node --check src/index.js && node --check src/credentials.js && node --check src/topology.js && node --check src/safety-policy.js && node --check src/transport-ssh.js && node --check src/transport-http.js && node --check src/harness.js && node --check src/knowledge.js",
+    "test": "npm run check && node --test tests/*.test.mjs"
+  }
+}
