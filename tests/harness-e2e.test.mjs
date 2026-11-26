@@ -114,7 +114,7 @@ test('VerificationHarness runs multi-node SSH (with jump_via tunnel) + controlle
     password: 'jump-pw',
     allowTcpForward: true,
     onExec: cmd => {
-      if (cmd.includes('PANGEA_VERIFY_PREFLIGHT_OK')) return { code: 0, stdout: 'PANGEA_VERIFY_PREFLIGHT_OK\n' }
+      if (cmd.includes('PANGEA_PREFLIGHT_OK')) return { code: 0, stdout: 'PANGEA_PREFLIGHT_OK\n' }
       return { code: 0, stdout: 'jump-ok\n' }
     },
   })
@@ -123,7 +123,7 @@ test('VerificationHarness runs multi-node SSH (with jump_via tunnel) + controlle
     password: 'host-pw',
     onExec: cmd => {
       state.actionLog.push(`host:${cmd}`)
-      if (cmd.includes('PANGEA_VERIFY_PREFLIGHT_OK')) return { code: 0, stdout: 'PANGEA_VERIFY_PREFLIGHT_OK\n' }
+      if (cmd.includes('PANGEA_PREFLIGHT_OK')) return { code: 0, stdout: 'PANGEA_PREFLIGHT_OK\n' }
       if (cmd === 'ip link set ens2f0 down') {
         state.nicDown = true
         state.daemonPid = '4299' // simulate failover/respawn
@@ -141,7 +141,7 @@ test('VerificationHarness runs multi-node SSH (with jump_via tunnel) + controlle
     password: 'ctrl-pw',
     onExec: cmd => {
       state.actionLog.push(`ctrl:${cmd}`)
-      if (cmd.includes('PANGEA_VERIFY_PREFLIGHT_OK')) return { code: 0, stdout: 'PANGEA_VERIFY_PREFLIGHT_OK\n' }
+      if (cmd.includes('PANGEA_PREFLIGHT_OK')) return { code: 0, stdout: 'PANGEA_PREFLIGHT_OK\n' }
       if (cmd.includes('pidof')) return { code: 0, stdout: `${state.daemonPid}\n` }
       if (cmd.startsWith('grep -aFq --')) {
         return cmd.includes('FI_MARKER_001') ? { code: 0, stdout: '' } : { code: 1, stdout: '' }

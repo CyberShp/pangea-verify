@@ -38,7 +38,13 @@ export {
   KnowledgePack,
   checkCardDeBinding,
   validateCapabilityCard,
+  validateFormalCardStamp,
 } from './knowledge.js'
+
+export {
+  runGatewayDaemon,
+  startDetachedGatewaySession,
+} from './session-daemon.js'
 
 export {
   indexPythonAutomation,

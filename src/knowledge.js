@@ -1,11 +1,41 @@
+import { execFile } from 'node:child_process'
 import { appendFile, mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { extractEnvironmentLiterals, NODE_ROLES } from './topology.js'
 
 const CARD_ID_RE = /^[a-z0-9][a-z0-9._-]*$/
+const ADAPTER_ID_RE = /^[a-z0-9][a-z0-9._-]*$/
+const SHA256_HEX_RE = /^[a-f0-9]{64}$/i
 const GENERIC_IPV4_RE = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g
 const VOLATILE_DEV_RE = /\/dev\/(?:sd[a-z]+\d*|vd[a-z]+\d*|hd[a-z]+\d*|xvd[a-z]+\d*|nvme\d+n\d+(?:p\d+)?)\b/i
+const ALLOWED_ROOT_FILES = new Set(['catalog.json', 'README.md', '.gitignore'])
+const ALLOWED_ROOT_DIRS = new Set(['.git', 'cards', 'topo-adapters', 'code-maps', 'feedback'])
+const ALLOWED_CARD_TIERS = new Set(['drafts', 'attested', 'verified'])
+
+export function validateFormalCardStamp(card) {
+  if (!card || typeof card !== 'object') return { ok: false, error: '能力卡不是合法对象' }
+  if (card.status === 'verified') {
+    const sha = typeof card.proof?.transcript_sha256 === 'string' ? card.proof.transcript_sha256.trim() : ''
+    const ids = Array.isArray(card.proof?.command_ids) ? card.proof.command_ids.filter(v => typeof v === 'string' && v.trim()) : []
+    if (!SHA256_HEX_RE.test(sha)) {
+      return { ok: false, error: `verified 卡片「${card.id || 'unknown'}」缺少合法 64 位 proof.transcript_sha256 实测指纹（疑似绕过闸门伪造）` }
+    }
+    if (ids.length === 0) {
+      return { ok: false, error: `verified 卡片「${card.id || 'unknown'}」缺少非空 proof.command_ids` }
+    }
+    return { ok: true }
+  }
+  if (card.status === 'human_attested') {
+    const by = typeof card.attestation?.attested_by === 'string' ? card.attestation.attested_by.trim() : ''
+    const reason = typeof card.attestation?.reason === 'string' ? card.attestation.reason.trim() : ''
+    if (!by || !reason) {
+      return { ok: false, error: `human_attested 卡片「${card.id || 'unknown'}」缺少 attestation.attested_by 或 reason` }
+    }
+    return { ok: true }
+  }
+  return { ok: false, error: `卡片「${card.id || 'unknown'}」状态「${card.status || '空'}」不属于正式卡片` }
+}
 
 function cleanText(value) {
   return typeof value === 'string' ? value.trim() : ''
@@ -440,5 +470,126 @@ export class KnowledgePack {
       if (error?.code === 'ENOENT') return []
       throw error
     }
+  }
+
+  async saveTopoAdapter({ id, code } = {}) {
+    await this.ensureLayout()
+    const cleanId = cleanText(id).replace(/\.mjs$/i, '')
+    if (!ADAPTER_ID_RE.test(cleanId)) {
+      throw new Error(`无效的 topo-adapter 名称「${id || ''}」（仅允许小写字母、数字、点、连字符或下划线）`)
+    }
+    const source = typeof code === 'string' ? code : ''
+    if (!source.trim()) throw new Error('topo-adapter 代码内容不能为空')
+    if (!/\bexport\s+(?:async\s+)?function\s+adaptTopology\b|\bexport\s+const\s+adaptTopology\b|\bexport\s+default\b|\bexport\s*\{[^}]*\badaptTopology\b/.test(source)) {
+      throw new Error('topo-adapter 必须显式导出 adaptTopology(rawInput, context) 函数或 default 函数')
+    }
+
+    const adaptersDir = path.join(this.root, 'topo-adapters')
+    const targetPath = path.join(adaptersDir, `${cleanId}.mjs`)
+    const tmpPath = path.join(adaptersDir, `.${cleanId}.${process.pid}.${randomUUID().slice(0, 8)}.tmp.mjs`)
+    await writeFile(tmpPath, `${source.replace(/\r?\n$/, '')}\n`, 'utf8')
+    try {
+      await new Promise((resolve, reject) => {
+        execFile(process.execPath, ['--check', tmpPath], { timeout: 10_000, windowsHide: true }, (err, _stdout, stderr) => {
+          if (err) reject(new Error(`topo-adapter 语法校验失败：${(stderr || err.message || '').trim()}`))
+          else resolve()
+        })
+      })
+      await rename(tmpPath, targetPath)
+      return { ok: true, id: cleanId, path: targetPath }
+    } catch (error) {
+      try { await unlink(tmpPath) } catch {}
+      throw error
+    }
+  }
+
+  async lint() {
+    const errors = []
+    let rootEntries
+    try {
+      rootEntries = await readdir(this.root, { withFileTypes: true })
+    } catch (error) {
+      if (error?.code === 'ENOENT') return { ok: true, errors: [] }
+      throw error
+    }
+
+    for (const entry of rootEntries) {
+      if (entry.isDirectory()) {
+        if (!ALLOWED_ROOT_DIRS.has(entry.name)) {
+          errors.push(`发现非法顶层目录「${entry.name}」（Knowledge Pack 仅允许 ${[...ALLOWED_ROOT_DIRS].join(', ')}）`)
+        }
+      } else if (entry.isFile()) {
+        if (!ALLOWED_ROOT_FILES.has(entry.name)) {
+          errors.push(`发现非法顶层文件「${entry.name}」（Knowledge Pack 根目录仅允许 ${[...ALLOWED_ROOT_FILES].join(', ')}）`)
+        }
+      } else {
+        errors.push(`发现不支持的顶层条目「${entry.name}」`)
+      }
+    }
+
+    const checkDirFiles = async (relDir, ext, pattern, onFile) => {
+      const absDir = path.join(this.root, relDir)
+      let items
+      try { items = await readdir(absDir, { withFileTypes: true }) } catch (e) { if (e?.code === 'ENOENT') return; throw e }
+      for (const item of items) {
+        const rel = `${relDir}/${item.name}`
+        if (!item.isFile()) {
+          errors.push(`目录「${relDir}」下禁止出现非文件条目「${rel}」`)
+          continue
+        }
+        if (!item.name.endsWith(ext) || (pattern && !pattern.test(item.name.slice(0, -ext.length)))) {
+          errors.push(`文件「${rel}」不符合命名规范（须为 *${ext}）`)
+          continue
+        }
+        if (onFile) await onFile(path.join(absDir, item.name), rel)
+      }
+    }
+
+    await checkDirFiles('topo-adapters', '.mjs', ADAPTER_ID_RE)
+    await checkDirFiles('code-maps', '.json', /^[A-Za-z0-9._-]+$/, async (full, rel) => {
+      try { JSON.parse(await readFile(full, 'utf8')) } catch { errors.push(`code-map JSON 损坏：${rel}`) }
+    })
+    await checkDirFiles('feedback', '.jsonl', CARD_ID_RE, async (full, rel) => {
+      const raw = await readFile(full, 'utf8')
+      for (const line of raw.split(/\r?\n/).filter(Boolean)) {
+        try { JSON.parse(line) } catch { errors.push(`feedback JSONL 含非法行：${rel}`); break }
+      }
+    })
+
+    // Check cards directory tiers
+    const cardsDir = path.join(this.root, 'cards')
+    try {
+      const cardEntries = await readdir(cardsDir, { withFileTypes: true })
+      for (const entry of cardEntries) {
+        if (!entry.isDirectory() || !ALLOWED_CARD_TIERS.has(entry.name)) {
+          errors.push(`cards/ 下发现非法条目「cards/${entry.name}」（仅允许 drafts/attested/verified）`)
+        }
+      }
+    } catch (e) {
+      if (e?.code !== 'ENOENT') throw e
+    }
+
+    for (const tier of ALLOWED_CARD_TIERS) {
+      await checkDirFiles(`cards/${tier}`, '.json', CARD_ID_RE, async (full, rel) => {
+        let card
+        try { card = JSON.parse(await readFile(full, 'utf8')) } catch { errors.push(`能力卡 JSON 损坏：${rel}`); return }
+        const checked = validateCapabilityCard(card)
+        if (!checked.ok) {
+          errors.push(`能力卡「${rel}」结构校验失败：${checked.error}`)
+          return
+        }
+        const expectedStatus = tier === 'verified' ? 'verified' : tier === 'attested' ? 'human_attested' : 'draft'
+        if (card.status !== expectedStatus) {
+          errors.push(`能力卡「${rel}」status 为「${card.status}」，与所在目录 ${tier} 不匹配`)
+          return
+        }
+        if (tier === 'verified' || tier === 'attested') {
+          const stamp = validateFormalCardStamp(card)
+          if (!stamp.ok) errors.push(`${rel}：${stamp.error}`)
+        }
+      })
+    }
+
+    return { ok: errors.length === 0, errors }
   }
 }

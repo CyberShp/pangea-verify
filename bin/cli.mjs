@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 import { readFile } from 'node:fs/promises'
+import path from 'node:path'
 import { KnowledgePack } from '../src/knowledge.js'
 import { indexPythonAutomation, saveCodeMap, scanSourceCli } from '../src/code-index.js'
 import { TrainerMcpServer, serveMcpStdio } from '../src/mcp-server.js'
+import { TopologyStore, adaptTopologyFile, normalizeTopology } from '../src/topology.js'
+import { runGatewayDaemon, startDetachedGatewaySession } from '../src/session-daemon.js'
 
 function parseArgs(argv) {
   const [command, ...rest] = argv
@@ -172,9 +175,57 @@ async function main() {
         errorSummary: flags.summary,
         firmwareHint: flags.firmware || '',
       })
+    } else if (command === 'kp-save-adapter') {
+      const code = flags['code-file']
+        ? await readFile(flags['code-file'], 'utf8')
+        : String(flags.code || '')
+      result = await pack.saveTopoAdapter({ id: flags.id, code })
+    } else if (command === 'kp-lint') {
+      result = await pack.lint()
     } else {
       throw new Error(`unknown knowledge command: ${command}`)
     }
+  } else if (command === 'topo-list') {
+    const store = new TopologyStore(flags.store)
+    result = { topologies: await store.list() }
+  } else if (command === 'topo-save') {
+    const store = new TopologyStore(flags.store)
+    const profile = await readJsonFlag(flags, 'topo-file', 'topo')
+    result = await store.save(profile)
+  } else if (command === 'topo-adapt') {
+    const store = new TopologyStore(flags.store)
+    const raw = await readFile(path.resolve(flags['raw-file']), 'utf8')
+    const adapted = await adaptTopologyFile(flags.adapter, raw, { rawFilePath: flags['raw-file'] })
+    const withSource = { ...adapted, source_adapter: path.basename(flags.adapter) }
+    if (flags.save === 'true') {
+      result = { saved: true, topology: await store.save(withSource) }
+    } else {
+      const normalized = await normalizeTopology(withSource, { keyDir: store.keyDir, platform: store.platform })
+      result = { saved: false, topology_id: normalized.id, nodes: Object.keys(normalized.nodes) }
+    }
+  } else if (command === 'session-start') {
+    result = await startDetachedGatewaySession({
+      storePath: flags.store,
+      topologyId: flags['topo-id'] || flags.topo,
+      dataRoot: flags['data-root'] || process.cwd(),
+      maxCalls: flags['max-calls'] ? Number(flags['max-calls']) : 80,
+      idleTimeoutMs: flags['idle-timeout-ms'] ? Number(flags['idle-timeout-ms']) : 30 * 60 * 1000,
+    })
+  } else if (command === 'session-close') {
+    result = await callGateway('/shutdown', {
+      run_cleanups: flags['run-cleanups'] !== 'false',
+    }, cfg)
+  } else if (command === '__session-daemon') {
+    await runGatewayDaemon({
+      storePath: flags.store,
+      topologyId: flags['topo-id'],
+      sessionId: flags['session-id'],
+      configPath: flags.config,
+      transcriptPath: flags.transcript,
+      maxCalls: flags['max-calls'] ? Number(flags['max-calls']) : 80,
+      idleTimeoutMs: flags['idle-timeout-ms'] ? Number(flags['idle-timeout-ms']) : 30 * 60 * 1000,
+    })
+    return
   } else if (command === 'index-py') {
     result = await indexPythonAutomation(flags.root, {
       query: flags.q || flags.query || '',

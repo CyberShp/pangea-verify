@@ -216,6 +216,23 @@ const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'topology_save_adapter',
+    description: '校验语法与 adaptTopology 导出并原子保存确定性 Topo 转换器至 knowledge-pack/topo-adapters/<id>.mjs',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '适配器名称（小写字母、数字、点、连字符或下划线）' },
+        code: { type: 'string', description: 'ESM JavaScript 源码，须导出 adaptTopology(rawInput, context)' },
+      },
+      required: ['id', 'code'],
+    },
+  },
+  {
+    name: 'knowledge_lint',
+    description: '校验 Knowledge Pack 目录白名单洁净度以及 verified/attested 正式卡片防伪印章',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
     name: 'code_index_python',
     description: '只读 AST 索引遗留 Python 自动化代码仓（零 import，提取类继承链、命令字符串与 Topo 解析器信号）',
     inputSchema: {
@@ -407,6 +424,12 @@ export class TrainerMcpServer {
     }
     if (name === 'knowledge_feedback_read') {
       return { card_id: args.card_id, entries: await this.pack.readFeedback(args.card_id) }
+    }
+    if (name === 'topology_save_adapter') {
+      return await this.pack.saveTopoAdapter({ id: args.id, code: args.code })
+    }
+    if (name === 'knowledge_lint') {
+      return await this.pack.lint()
     }
     if (name === 'code_index_python') {
       return await indexPythonAutomation(args.root_dir, {

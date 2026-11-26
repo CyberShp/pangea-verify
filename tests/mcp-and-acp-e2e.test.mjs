@@ -113,7 +113,7 @@ test('Full Phase-2 lifecycle: MCP trainer distills legacy Python + XML topo -> p
   })
   const labB = await startLabNode({
     onExec: cmd => {
-      if (cmd.includes('PANGEA_VERIFY_PREFLIGHT_OK')) return { code: 0, stdout: 'PANGEA_VERIFY_PREFLIGHT_OK\n' }
+      if (cmd.includes('PANGEA_PREFLIGHT_OK')) return { code: 0, stdout: 'PANGEA_PREFLIGHT_OK\n' }
       return { code: 0, stdout: `labB:${cmd}\n` }
     },
   })

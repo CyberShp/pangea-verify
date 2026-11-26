@@ -19,6 +19,7 @@
     "./code-index": "./src/code-index.js",
     "./runner-acp": "./src/runner-acp.js",
     "./mcp-server": "./src/mcp-server.js",
+    "./session-daemon": "./src/session-daemon.js",
     "./package.json": "./package.json"
   },
   "files": [
@@ -26,6 +27,7 @@
     "src",
     "skills",
     "tools",
+    "scripts",
     "README.md"
   ],
   "engines": {
@@ -36,7 +38,8 @@
     "ssh2": "^1.17.0"
   },
   "scripts": {
-    "check": "node --check bin/cli.mjs && node --check src/index.js && node --check src/credentials.js && node --check src/topology.js && node --check src/safety-policy.js && node --check src/transport-ssh.js && node --check src/transport-http.js && node --check src/harness.js && node --check src/knowledge.js && node --check src/code-index.js && node --check src/runner-acp.js && node --check src/mcp-server.js",
+    "check": "node --check bin/cli.mjs && node --check scripts/pack-skill.mjs && node --check src/index.js && node --check src/credentials.js && node --check src/topology.js && node --check src/safety-policy.js && node --check src/transport-ssh.js && node --check src/transport-http.js && node --check src/harness.js && node --check src/knowledge.js && node --check src/code-index.js && node --check src/runner-acp.js && node --check src/mcp-server.js && node --check src/session-daemon.js",
+    "pack:skill": "node scripts/pack-skill.mjs",
     "test": "npm run check && node --test tests/*.test.mjs"
   }
 }

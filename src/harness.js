@@ -157,6 +157,8 @@ export async function startGatewaySession({
   actorPhaseLabel = 'worker',
   signal = null,
   onStateChange = null,
+  idleTimeoutMs = 0,
+  onShutdown = null,
 } = {}) {
   if (!resolvedTopology?.nodes) throw new Error('resolvedTopology 不能为空')
   if (!transcriptPath) throw new Error('transcriptPath 不能为空')
@@ -170,6 +172,16 @@ export async function startGatewaySession({
   let callsUsed = 0
   let phase = initialPhase === 'armed' ? 'armed' : 'probe_readonly'
   const token = randomBytes(32).toString('hex')
+  let idleTimer = null
+  let closeHandle = null
+  const bumpIdleTimer = () => {
+    if (!Number.isFinite(idleTimeoutMs) || idleTimeoutMs <= 0) return
+    clearTimeout(idleTimer)
+    idleTimer = setTimeout(() => {
+      void Promise.resolve(closeHandle?.({ runCleanups: true })).finally(() => onShutdown?.('idle_timeout'))
+    }, idleTimeoutMs)
+    idleTimer.unref?.()
+  }
 
   const requireNode = target => {
     const id = String(target || '').trim()
@@ -340,6 +352,7 @@ export async function startGatewaySession({
       }
       const body = await readBodyJson(req)
       const route = new URL(req.url || '/', 'http://127.0.0.1').pathname
+      bumpIdleTimer()
 
       if (route === '/status') {
         return respond(200, {
@@ -551,6 +564,23 @@ export async function startGatewaySession({
         return respond(signed.blocked ? 403 : 200, signed)
       }
 
+      if (route === '/shutdown') {
+        clearTimeout(idleTimer)
+        const cleanup = body.run_cleanups === false
+          ? { status: 'skipped', steps: [] }
+          : await executeRegisteredCleanups({ onlyPending: true })
+        respond(200, {
+          ok: true,
+          session_id: sessionId,
+          transcript_path: transcriptPath,
+          cleanup,
+        })
+        setImmediate(() => {
+          void Promise.resolve(closeHandle?.({ runCleanups: false })).finally(() => onShutdown?.('shutdown'))
+        })
+        return
+      }
+
       return respond(404, { error: 'not-found' })
     } catch (error) {
       return respond(error.statusCode ?? 400, { error: error instanceof Error ? error.message : String(error) })
@@ -565,11 +595,30 @@ export async function startGatewaySession({
 
   if (gatewayConfigPath) {
     await mkdir(path.dirname(gatewayConfigPath), { recursive: true })
-    await writeFile(gatewayConfigPath, `${JSON.stringify({ url: gatewayUrl, token, session_id: sessionId })}\n`, { encoding: 'utf8', mode: 0o600 })
+    await writeFile(gatewayConfigPath, `${JSON.stringify({ url: gatewayUrl, token, session_id: sessionId, transcript_path: transcriptPath })}\n`, { encoding: 'utf8', mode: 0o600 })
     try { await chmod(gatewayConfigPath, 0o600) } catch {}
   }
 
   let closed = false
+  closeHandle = async ({ runCleanups = true } = {}) => {
+    if (closed) return null
+    closed = true
+    clearTimeout(idleTimer)
+    if (gatewayConfigPath) {
+      try { await unlink(gatewayConfigPath) } catch {}
+    }
+    try { server.closeAllConnections?.() } catch {}
+    await new Promise(resolve => server.close(() => resolve()))
+    try { await ssh.disposeOwner(sessionId) } catch {}
+    let cleanupReport = null
+    if (runCleanups && registeredCleanups.length > 0) {
+      cleanupReport = await executeRegisteredCleanups({ onlyPending: true })
+    }
+    await ssh.closeAll()
+    return cleanupReport
+  }
+  bumpIdleTimer()
+
   return {
     sessionId,
     gatewayUrl,
@@ -583,22 +632,7 @@ export async function startGatewaySession({
     execInternalSsh: execSshInternal,
     execInternalHttp: execHttpInternal,
     runCleanups: executeRegisteredCleanups,
-    async close({ runCleanups = true } = {}) {
-      if (closed) return null
-      closed = true
-      if (gatewayConfigPath) {
-        try { await unlink(gatewayConfigPath) } catch {}
-      }
-      try { server.closeAllConnections?.() } catch {}
-      await new Promise(resolve => server.close(() => resolve()))
-      try { await ssh.disposeOwner(sessionId) } catch {}
-      let cleanupReport = null
-      if (runCleanups && registeredCleanups.length > 0) {
-        cleanupReport = await executeRegisteredCleanups({ onlyPending: true })
-      }
-      await ssh.closeAll()
-      return cleanupReport
-    },
+    close: closeHandle,
   }
 }
 
@@ -743,7 +777,7 @@ export class VerificationHarness {
     const commandIds = []
     for (const [nodeId, node] of Object.entries(resolvedTopology.nodes)) {
       if (node.ssh) {
-        const res = await session.execInternalSsh(nodeId, 'echo PANGEA_VERIFY_PREFLIGHT_OK', {
+        const res = await session.execInternalSsh(nodeId, 'echo PANGEA_PREFLIGHT_OK', {
           timeoutMs: 15_000,
           enforceSafety: false,
           safetyPhase: 'preflight',
@@ -751,7 +785,7 @@ export class VerificationHarness {
           execSignal: signal,
         })
         commandIds.push(res.command_id)
-        const ok = Boolean(res.success && /PANGEA_VERIFY_PREFLIGHT_OK/.test(res.stdout || ''))
+        const ok = Boolean(res.success && /PANGEA_PREFLIGHT_OK/.test(res.stdout || ''))
         checks.push({ kind: 'ssh', target: nodeId, ok, command_id: res.command_id, detail: ok ? 'SSH 连通正常' : (res.error || res.stderr || `exit ${res.exit_code}`) })
         if (!ok) {
           return { ok: false, error: `节点「${nodeId}」SSH 预检失败：${res.error || res.stderr || `exit ${res.exit_code}`}`, checks, command_ids: commandIds, baseline: null }

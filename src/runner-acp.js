@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises'
-import { KnowledgePack } from './knowledge.js'
+import { KnowledgePack, validateFormalCardStamp } from './knowledge.js'
 import { lookupCodeCliHints } from './code-index.js'
 
 const posixPath = value => String(value ?? '').replaceAll('\\', '/')
@@ -28,9 +28,22 @@ export async function buildBatchKnowledgeContext({ packDir, targets = [], topolo
   const availableRoles = topology?.nodes
     ? new Set(Object.values(topology.nodes).map(n => n.role))
     : null
-  const cards = availableRoles
+  const roleMatched = availableRoles
     ? catalog.cards.filter(c => (c.required_roles || []).every(r => availableRoles.has(r)))
     : catalog.cards
+
+  const cards = []
+  const warnings = []
+  for (const summary of roleMatched) {
+    const full = await pack.getCard(summary.id, { allowDraft: false })
+    if (!full) continue
+    const stamp = validateFormalCardStamp(full)
+    if (!stamp.ok) {
+      warnings.push(stamp.error)
+      continue
+    }
+    cards.push(summary)
+  }
 
   const sourcePaths = collectSourcePathsFromTargets(targets)
   const codeCliHints = await lookupCodeCliHints(packDir, sourcePaths)
@@ -40,6 +53,7 @@ export async function buildBatchKnowledgeContext({ packDir, targets = [], topolo
     read_only_batch_policy: '只允许读取 verified/human_attested 能力卡；如遇参数失效，请将失配信息写入结果的 card_feedback 字段，严禁跑批中途改写正式卡片。',
     cards,
     code_cli_hints: codeCliHints,
+    ...(warnings.length ? { warnings } : {}),
   }
 }
 

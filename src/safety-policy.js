@@ -81,7 +81,7 @@ function checkTargetWhitelists(text, node) {
       return {
         blocked: true,
         code: 'REBOOT_NOT_AUTHORIZED',
-        reason: `节点「${node?.id || 'unknown'}」未在 Topo test_resources.allow_reboot 中授权整机重启/关机`,
+        reason: `禁止整机重启/关机命令（节点「${node?.id || 'unknown'}」未在 Topo test_resources.allow_reboot 中授权）`,
       }
     }
   }

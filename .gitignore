@@ -3,4 +3,5 @@ node_modules/
 *.key
 .DS_Store
 coverage/
+dist/
 tmp/
