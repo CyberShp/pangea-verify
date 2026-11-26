@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { readFile } from 'node:fs/promises'
 import { KnowledgePack } from '../src/knowledge.js'
+import { indexPythonAutomation, saveCodeMap, scanSourceCli } from '../src/code-index.js'
+import { TrainerMcpServer, serveMcpStdio } from '../src/mcp-server.js'
 
 function parseArgs(argv) {
   const [command, ...rest] = argv
@@ -173,6 +175,29 @@ async function main() {
     } else {
       throw new Error(`unknown knowledge command: ${command}`)
     }
+  } else if (command === 'index-py') {
+    result = await indexPythonAutomation(flags.root, {
+      query: flags.q || flags.query || '',
+      topoOnly: flags['topo-only'] === 'true',
+      maxFiles: flags['max-files'] ? Number(flags['max-files']) : 200,
+    })
+  } else if (command === 'index-cli') {
+    const scanned = await scanSourceCli(flags.root, {
+      maxFiles: flags['max-files'] ? Number(flags['max-files']) : 500,
+    })
+    let savedPath = ''
+    if (flags.pack && flags.name) {
+      savedPath = await saveCodeMap(flags.pack, flags.name, scanned)
+    }
+    result = { ...scanned, ...(savedPath ? { saved_path: savedPath } : {}) }
+  } else if (command === 'mcp') {
+    const server = new TrainerMcpServer({
+      storePath: flags.store,
+      packDir: flags.pack,
+      dataRoot: flags['data-root'] || process.cwd(),
+    })
+    serveMcpStdio(server)
+    return
   } else {
     throw new Error(`unknown command: ${command}`)
   }

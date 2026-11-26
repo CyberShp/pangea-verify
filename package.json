@@ -16,6 +16,9 @@
     "./transport-http": "./src/transport-http.js",
     "./harness": "./src/harness.js",
     "./knowledge": "./src/knowledge.js",
+    "./code-index": "./src/code-index.js",
+    "./runner-acp": "./src/runner-acp.js",
+    "./mcp-server": "./src/mcp-server.js",
     "./package.json": "./package.json"
   },
   "files": [
@@ -33,7 +36,7 @@
     "ssh2": "^1.17.0"
   },
   "scripts": {
-    "check": "node --check bin/cli.mjs && node --check src/index.js && node --check src/credentials.js && node --check src/topology.js && node --check src/safety-policy.js && node --check src/transport-ssh.js && node --check src/transport-http.js && node --check src/harness.js && node --check src/knowledge.js",
+    "check": "node --check bin/cli.mjs && node --check src/index.js && node --check src/credentials.js && node --check src/topology.js && node --check src/safety-policy.js && node --check src/transport-ssh.js && node --check src/transport-http.js && node --check src/harness.js && node --check src/knowledge.js && node --check src/code-index.js && node --check src/runner-acp.js && node --check src/mcp-server.js",
     "test": "npm run check && node --test tests/*.test.mjs"
   }
 }

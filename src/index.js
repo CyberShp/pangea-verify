@@ -39,3 +39,21 @@ export {
   checkCardDeBinding,
   validateCapabilityCard,
 } from './knowledge.js'
+
+export {
+  indexPythonAutomation,
+  lookupCodeCliHints,
+  saveCodeMap,
+  scanSourceCli,
+} from './code-index.js'
+
+export {
+  buildBatchKnowledgeContext,
+  createAcpWorkerAdapter,
+  runAutonomousVerification,
+} from './runner-acp.js'
+
+export {
+  TrainerMcpServer,
+  serveMcpStdio,
+} from './mcp-server.js'
