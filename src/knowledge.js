@@ -317,8 +317,10 @@ export class KnowledgePack {
     })
   }
 
-  async getCard(cardId, { allowDraft = false } = {}) {
-    const tiers = allowDraft ? ['verified', 'attested', 'drafts'] : ['verified', 'attested']
+  async getCard(cardId, { allowDraft = false, preferDraft = false } = {}) {
+    const tiers = allowDraft
+      ? (preferDraft ? ['drafts', 'verified', 'attested'] : ['verified', 'attested', 'drafts'])
+      : ['verified', 'attested']
     for (const tier of tiers) {
       try {
         return JSON.parse(await readFile(this.cardPath(tier, cardId), 'utf8'))
@@ -337,10 +339,19 @@ export class KnowledgePack {
       err.code = checked.code || 'INVALID_CAPABILITY_CARD'
       throw err
     }
+    const existingFormal = await this.getCard(checked.value.id, { allowDraft: false })
+    const existingDraft = await this.getCard(checked.value.id, { allowDraft: true, preferDraft: true })
+    const prevRevision = Math.max(
+      Number.isInteger(existingFormal?.revision) ? existingFormal.revision : (existingFormal ? 1 : 0),
+      Number.isInteger(existingDraft?.revision) ? existingDraft.revision : 0,
+    )
+    const contentSha256 = createHash('sha256').update(JSON.stringify(checked.value)).digest('hex')
     const now = new Date().toISOString()
     const draftRecord = {
       ...checked.value,
       status: 'draft',
+      revision: prevRevision + 1,
+      content_sha256: contentSha256,
       updated_at: now,
     }
     await writeAtomicJson(this.cardPath('drafts', draftRecord.id), draftRecord)
@@ -348,13 +359,20 @@ export class KnowledgePack {
     return draftRecord
   }
 
-  async promoteCard({ cardId, transcriptPath, commandIds = [], firmwareHint = '', topology = null } = {}) {
+  async promoteCard({ cardId, transcriptPath, commandIds = [], firmwareHint = '', topology = null, expectedRevision = null, expectedContentSha256 = '' } = {}) {
     await this.ensureLayout()
-    const candidate = await this.getCard(cardId, { allowDraft: true })
+    const candidate = await this.getCard(cardId, { allowDraft: true, preferDraft: true })
     if (!candidate) throw new Error(`未找到待转正能力卡：${cardId}`)
+    if (expectedRevision !== null && expectedRevision !== undefined && Number(candidate.revision || 1) !== Number(expectedRevision)) {
+      throw new Error(`能力卡「${cardId}」修订号不匹配：期望 ${expectedRevision}，当前 ${candidate.revision || 1}`)
+    }
 
     const checked = validateCapabilityCard(candidate, { topology })
     if (!checked.ok) throw new Error(`能力卡校验未通过：${checked.error}`)
+    const contentSha256 = candidate.content_sha256 || createHash('sha256').update(JSON.stringify(checked.value)).digest('hex')
+    if (expectedContentSha256 && contentSha256 !== expectedContentSha256) {
+      throw new Error(`能力卡「${cardId}」内容摘要不匹配，审批内容与当前草稿不一致`)
+    }
 
     const ids = cleanStringList(commandIds)
     if (ids.length === 0) {
@@ -398,6 +416,8 @@ export class KnowledgePack {
     const verifiedCard = {
       ...checked.value,
       status: 'verified',
+      revision: Number.isInteger(candidate.revision) ? candidate.revision : 1,
+      content_sha256: contentSha256,
       proof: {
         verified_at: new Date().toISOString(),
         transcript_sha256: transcriptSha256,
@@ -413,21 +433,30 @@ export class KnowledgePack {
     return verifiedCard
   }
 
-  async attestCard({ cardId, attestedBy, reason, firmwareHint = '', topology = null } = {}) {
+  async attestCard({ cardId, attestedBy, reason, firmwareHint = '', topology = null, expectedRevision = null, expectedContentSha256 = '' } = {}) {
     await this.ensureLayout()
     const by = cleanText(attestedBy)
     const why = cleanText(reason)
     if (!by || !why) throw new Error('人工签字背书（attestCard）必须提供 attestedBy 与 reason')
-    const candidate = await this.getCard(cardId, { allowDraft: true })
+    const candidate = await this.getCard(cardId, { allowDraft: true, preferDraft: true })
     if (!candidate) throw new Error(`未找到待背书能力卡：${cardId}`)
     if (candidate.status === 'verified') throw new Error(`能力卡「${cardId}」已是实测转正（verified）状态，无需降级背书`)
+    if (expectedRevision !== null && expectedRevision !== undefined && Number(candidate.revision || 1) !== Number(expectedRevision)) {
+      throw new Error(`能力卡「${cardId}」修订号不匹配：期望 ${expectedRevision}，当前 ${candidate.revision || 1}`)
+    }
 
     const checked = validateCapabilityCard(candidate, { topology })
     if (!checked.ok) throw new Error(`能力卡校验未通过：${checked.error}`)
+    const contentSha256 = candidate.content_sha256 || createHash('sha256').update(JSON.stringify(checked.value)).digest('hex')
+    if (expectedContentSha256 && contentSha256 !== expectedContentSha256) {
+      throw new Error(`能力卡「${cardId}」内容摘要不匹配，审批内容与当前草稿不一致`)
+    }
 
     const attestedCard = {
       ...checked.value,
       status: 'human_attested',
+      revision: Number.isInteger(candidate.revision) ? candidate.revision : 1,
+      content_sha256: contentSha256,
       attestation: {
         attested_at: new Date().toISOString(),
         attested_by: by,
@@ -437,7 +466,10 @@ export class KnowledgePack {
       updated_at: new Date().toISOString(),
     }
     await writeAtomicJson(this.cardPath('attested', attestedCard.id), attestedCard)
-    try { await unlink(this.cardPath('drafts', attestedCard.id)) } catch {}
+    if (candidate.status === 'draft') {
+      try { await unlink(this.cardPath('drafts', attestedCard.id)) } catch {}
+      try { await unlink(this.cardPath('verified', attestedCard.id)) } catch {}
+    }
     await this.rebuildCatalog()
     return attestedCard
   }

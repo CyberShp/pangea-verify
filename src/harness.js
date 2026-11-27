@@ -289,12 +289,31 @@ export async function startGatewaySession({
     })
   }
 
-  const executeRegisteredCleanups = async ({ onlyPending = true } = {}) => {
+  const executeRegisteredCleanups = async ({ onlyPending = true, retryFailed = false } = {}) => {
     const steps = []
     let allOk = true
     const items = [...registeredCleanups].reverse()
     for (const item of items) {
-      if (onlyPending && item.executed) continue
+      const alreadySucceeded = item.succeeded === true
+      const alreadyFailed = item.attempted === true && !alreadySucceeded
+      if (onlyPending && alreadySucceeded) {
+        if (item.last_step) steps.push({ ...item.last_step })
+        continue
+      }
+      if (onlyPending && alreadyFailed && !retryFailed) {
+        allOk = false
+        if (item.last_step) steps.push({ ...item.last_step })
+        else {
+          steps.push({
+            kind: item.kind,
+            target: item.target,
+            description: item.description,
+            ok: false,
+            error: '清理步骤先前执行失败且尚未恢复',
+          })
+        }
+        continue
+      }
       try {
         let res
         if (item.kind === 'http') {
@@ -313,27 +332,37 @@ export async function startGatewaySession({
             execSignal: null,
           })
         }
-        item.executed = true
-        steps.push({
+        const ok = Boolean(res.success)
+        item.attempted = true
+        item.succeeded = ok
+        item.executed = ok
+        const step = {
           kind: item.kind,
           target: item.target,
           description: item.description,
           command_id: res.command_id,
-          ok: Boolean(res.success),
+          ok,
           ...(res.exit_code !== undefined ? { exit_code: res.exit_code } : {}),
           ...(res.status_code !== undefined ? { status_code: res.status_code } : {}),
           ...(res.error ? { error: res.error } : {}),
-        })
-        if (!res.success) allOk = false
+        }
+        item.last_step = step
+        steps.push(step)
+        if (!ok) allOk = false
       } catch (error) {
         allOk = false
-        steps.push({
+        item.attempted = true
+        item.succeeded = false
+        item.executed = false
+        const step = {
           kind: item.kind,
           target: item.target,
           description: item.description,
           ok: false,
           error: error.message,
-        })
+        }
+        item.last_step = step
+        steps.push(step)
       }
     }
     return { status: allOk ? 'ok' : 'failed', steps }
