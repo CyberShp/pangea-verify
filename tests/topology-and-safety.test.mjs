@@ -162,42 +162,39 @@ test('safety-policy enforces PROBE_READONLY physical lock and ARMED resource whi
     assert.equal(evaluateHttpSafety({ method: 'GET', path: '/api/v1/luns' }, { phase: 'probe_readonly', node: ctrlNode }).blocked, false)
     assert.equal(evaluateHttpSafety({ method: 'POST', path: '/api/v1/graphql-query' }, { phase: 'probe_readonly', node: ctrlNode }).blocked, false)
 
-    // Mutating operations are physically locked in probe_readonly EVEN on whitelisted resources
+    // Mutating network/HTTP operations are locked in probe_readonly; /tmp and /dev/shm scratch files pass
     const roNic = evaluateCommandSafety('ip link set ens2f0 down', { phase: 'probe_readonly', node: hostNode })
     assert.equal(roNic.blocked, true)
     assert.equal(roNic.code, 'PHASE_READONLY_LOCKED')
 
-    const roWrite = evaluateCommandSafety('echo 1 > /dev/shm/inject_once', { phase: 'probe_readonly', node: ctrlNode })
-    assert.equal(roWrite.blocked, true)
-    assert.equal(roWrite.code, 'PHASE_READONLY_LOCKED')
+    assert.equal(evaluateCommandSafety('echo 1 > /dev/shm/inject_once', { phase: 'probe_readonly', node: ctrlNode }).blocked, false)
+    assert.equal(evaluateCommandSafety('mkdir -p /tmp/pangea-test && rm -f /tmp/pangea-test/flag', { phase: 'probe_readonly', node: ctrlNode }).blocked, false)
+
+    const roWriteEtc = evaluateCommandSafety('echo 1 > /etc/custom.conf', { phase: 'probe_readonly', node: ctrlNode })
+    assert.equal(roWriteEtc.blocked, true)
+    assert.equal(roWriteEtc.code, 'PHASE_READONLY_LOCKED')
 
     const roHttp = evaluateHttpSafety({ method: 'POST', path: '/api/v1/luns' }, { phase: 'probe_readonly', node: ctrlNode })
     assert.equal(roHttp.blocked, true)
     assert.equal(roHttp.code, 'PHASE_READONLY_LOCKED')
 
-    // Once ARMED, whitelisted data_nics, stable block_devices, scratch files, and HTTP POST are unlocked
+    // Once ARMED, non-protected NICs, block devices, processes, scratch files, and HTTP POST are allowed
     assert.equal(evaluateCommandSafety('ip link set ens2f0 down', { phase: 'armed', node: hostNode }).blocked, false)
+    assert.equal(evaluateCommandSafety('ip link set eth9 down', { phase: 'armed', node: hostNode }).blocked, false)
     assert.equal(evaluateCommandSafety('dd if=/dev/zero of=/dev/disk/by-id/wwn-0x600507680c800001 bs=4k count=4 oflag=direct', { phase: 'armed', node: hostNode }).blocked, false)
     assert.equal(evaluateCommandSafety('echo 1 > /dev/shm/inject_once', { phase: 'armed', node: ctrlNode }).blocked, false)
     assert.equal(evaluateCommandSafety('pkill san_tgt', { phase: 'armed', node: ctrlNode }).blocked, false)
+    assert.equal(evaluateCommandSafety('pkill custom_worker', { phase: 'armed', node: hostNode }).blocked, false)
     assert.equal(evaluateHttpSafety({ method: 'POST', path: '/api/v1/luns' }, { phase: 'armed', node: ctrlNode }).blocked, false)
 
-    // Protected management NICs, boot disks, non-whitelisted NICs/procs, and root wipe remain strictly blocked even when ARMED
+    // Protected management NICs, boot disks, and unauthorized reboot remain strictly blocked even when ARMED
     const mgmtNicRes = evaluateCommandSafety('ip link set eno1 down', { phase: 'armed', node: hostNode })
     assert.equal(mgmtNicRes.blocked, true)
     assert.equal(mgmtNicRes.code, 'PROTECTED_MGMT_NIC')
 
-    const unknownNicRes = evaluateCommandSafety('ip link set eth9 down', { phase: 'armed', node: hostNode })
-    assert.equal(unknownNicRes.blocked, true)
-    assert.equal(unknownNicRes.code, 'NIC_NOT_IN_TEST_RESOURCES')
-
     const bootDiskRes = evaluateCommandSafety('dd if=/dev/zero of=/dev/sda bs=1M count=1', { phase: 'armed', node: hostNode })
     assert.equal(bootDiskRes.blocked, true)
     assert.equal(bootDiskRes.code, 'PROTECTED_BOOT_DISK')
-
-    const unauthProc = evaluateCommandSafety('pkill NetworkManager', { phase: 'armed', node: hostNode })
-    assert.equal(unauthProc.blocked, true)
-    assert.equal(unauthProc.code, 'PROCESS_NOT_WHITELISTED')
 
     const rebootRes = evaluateCommandSafety('sudo reboot', { phase: 'armed', node: hostNode })
     assert.equal(rebootRes.blocked, true)

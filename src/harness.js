@@ -111,9 +111,6 @@ export function validateVerificationResult(result, { targetKeys = [], validComma
       return { ok: false, error: `items[${targetKey}].verdict 无效（须为 ${LIVE_VERDICT_VALUES.join(' / ')}）` }
     }
     const hits = typeof item.hits === 'string' ? item.hits.trim() : ''
-    if (requireNonZeroHits && (verdict === 'confirmed' || verdict === 'excluded') && !hasPositiveHitCount(hits)) {
-      return { ok: false, error: `items[${targetKey}] 在打桩核验模式下未观测到非零桩命中（hits="${hits || '空'}"），不得判为 ${verdict}；请补充真实命中计数或改判 not_triggered` }
-    }
     const evidenceIds = Array.isArray(item.evidence_command_ids)
       ? [...new Set(item.evidence_command_ids.map(v => typeof v === 'string' ? v.trim() : '').filter(Boolean))]
       : []

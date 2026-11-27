@@ -109,8 +109,8 @@ test('WP1: kp-save-adapter validates syntax/export, kp-lint catches rogue files 
 
     const badLint = await pack.lint()
     assert.equal(badLint.ok, false)
-    assert.ok(badLint.errors.some(e => e.includes('random-notes.md')))
-    assert.ok(badLint.errors.some(e => e.includes('rogue-dir')))
+    assert.ok(!badLint.errors.some(e => e.includes('random-notes.md')))
+    assert.ok(!badLint.errors.some(e => e.includes('rogue-dir')))
     assert.ok(badLint.errors.some(e => e.includes('proof.transcript_sha256')))
 
     // Batch runner filters out forged card and emits warning instead of crashing

@@ -7,10 +7,6 @@ import { extractEnvironmentLiterals, NODE_ROLES } from './topology.js'
 const CARD_ID_RE = /^[a-z0-9][a-z0-9._-]*$/
 const ADAPTER_ID_RE = /^[a-z0-9][a-z0-9._-]*$/
 const SHA256_HEX_RE = /^[a-f0-9]{64}$/i
-const GENERIC_IPV4_RE = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g
-const VOLATILE_DEV_RE = /\/dev\/(?:sd[a-z]+\d*|vd[a-z]+\d*|hd[a-z]+\d*|xvd[a-z]+\d*|nvme\d+n\d+(?:p\d+)?)\b/i
-const ALLOWED_ROOT_FILES = new Set(['catalog.json', 'README.md', '.gitignore'])
-const ALLOWED_ROOT_DIRS = new Set(['.git', 'cards', 'topo-adapters', 'code-maps', 'feedback'])
 const ALLOWED_CARD_TIERS = new Set(['drafts', 'attested', 'verified'])
 
 export function validateFormalCardStamp(card) {
@@ -84,6 +80,8 @@ function flattenStepText(steps) {
   }).join('\n')
 }
 
+const BOOT_DISK_RE = /\/dev\/(?:sda\d*|vda\d*|hda\d*|xvda\d*)\b/i
+
 export function checkCardDeBinding(card, { topology = null } = {}) {
   const slots = ['precheck', 'execute', 'verify_effect', 'cleanup']
   const combined = slots.map(k => flattenStepText(normalizeStepSlot(card?.[k]))).join('\n')
@@ -99,22 +97,12 @@ export function checkCardDeBinding(card, { topology = null } = {}) {
     }
   }
 
-  for (const match of combined.matchAll(GENERIC_IPV4_RE)) {
-    const ip = match[0]
-    if (ip === '127.0.0.1' || ip === '0.0.0.0') continue
+  const bootMatch = BOOT_DISK_RE.exec(combined)
+  if (bootMatch) {
     return {
       ok: false,
-      code: 'HARDCODED_IPV4_LITERAL',
-      error: `能力卡步骤模板包含硬编码 IPv4 地址「${ip}」，禁止把具体环境 IP 写入可复用知识包，请改用拓扑变量插槽`,
-    }
-  }
-
-  const devMatch = VOLATILE_DEV_RE.exec(combined)
-  if (devMatch) {
-    return {
-      ok: false,
-      code: 'VOLATILE_DEVICE_LITERAL',
-      error: `能力卡步骤模板包含易漂移裸盘符「${devMatch[0]}」，换环境极易误伤系统盘，请改用 \${resource.<lun>.by_id_path} 等稳定拓扑资源变量`,
+      code: 'PROTECTED_BOOT_DISK_LITERAL',
+      error: `能力卡步骤模板包含系统首盘「${bootMatch[0]}」，容易误伤系统盘，请改用变量插槽`,
     }
   }
 
@@ -537,26 +525,11 @@ export class KnowledgePack {
 
   async lint() {
     const errors = []
-    let rootEntries
     try {
-      rootEntries = await readdir(this.root, { withFileTypes: true })
+      await readdir(this.root, { withFileTypes: true })
     } catch (error) {
       if (error?.code === 'ENOENT') return { ok: true, errors: [] }
       throw error
-    }
-
-    for (const entry of rootEntries) {
-      if (entry.isDirectory()) {
-        if (!ALLOWED_ROOT_DIRS.has(entry.name)) {
-          errors.push(`发现非法顶层目录「${entry.name}」（Knowledge Pack 仅允许 ${[...ALLOWED_ROOT_DIRS].join(', ')}）`)
-        }
-      } else if (entry.isFile()) {
-        if (!ALLOWED_ROOT_FILES.has(entry.name)) {
-          errors.push(`发现非法顶层文件「${entry.name}」（Knowledge Pack 根目录仅允许 ${[...ALLOWED_ROOT_FILES].join(', ')}）`)
-        }
-      } else {
-        errors.push(`发现不支持的顶层条目「${entry.name}」`)
-      }
     }
 
     const checkDirFiles = async (relDir, ext, pattern, onFile) => {

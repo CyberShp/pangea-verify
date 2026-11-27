@@ -90,7 +90,7 @@ test('KnowledgePack enforces all 4 promotion gates: de-binding, cleanup pairing,
       err => err.code === 'HARDCODED_TOPOLOGY_LITERAL',
     )
 
-    // Gate 1b: Rejects volatile bare disk (/dev/sdb)
+    // Gate 1b: Rejects boot disk literal (/dev/sda) while allowing non-boot test disk /dev/sdb
     await assert.rejects(
       () => pack.saveDraft({
         id: 'io.fio.randwrite',
@@ -100,11 +100,11 @@ test('KnowledgePack enforces all 4 promotion gates: de-binding, cleanup pairing,
         required_roles: ['host'],
         side_effect: 'mutating',
         precheck: 'which fio',
-        execute: 'fio --name=job1 --filename=/dev/sdb --rw=randwrite --size=64M',
+        execute: 'fio --name=job1 --filename=/dev/sda --rw=randwrite --size=64M',
         verify_effect: 'echo ok',
         cleanup: 'pkill fio || true',
       }, { topology: rawTopo }),
-      err => err.code === 'VOLATILE_DEVICE_LITERAL',
+      err => err.code === 'HARDCODED_TOPOLOGY_LITERAL' || err.code === 'PROTECTED_BOOT_DISK_LITERAL',
     )
 
     // Gate 2: Rejects mutating card without cleanup

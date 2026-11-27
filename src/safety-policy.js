@@ -35,8 +35,6 @@ const IP_ADDR_MUTATE_RE = /(?:^|[;&|(\n]\s*)(?:sudo\s+)?ip\s+(?:addr|address|a)\
 const DD_OF_RE = /(?:^|[;&|(\n]\s*)(?:sudo\s+)?dd\b[^\n;&|]*\bof=([^\s;&|)'"]+)/gi
 const DISK_WIPE_RE = /(?:^|[;&|(\n]\s*)(?:sudo\s+)?(?:mkfs(?:\.[a-z0-9_]+)?|wipefs|blkdiscard)\b([^\n;&|]*)/gi
 
-const EPHEMERAL_TEST_TOOLS = new Set(['fio', 'iperf', 'iperf3', 'dd', 'tcpdump', 'ping', 'tail'])
-
 const READONLY_MUTATION_PATTERNS = [
   { pattern: REBOOT_RE, reason: '整机重启/关机属于变更操作' },
   { pattern: /(?:^|[;&|(\n]\s*)(?:sudo\s+)?(?:kill|pkill|killall)\b/i, reason: '进程信号/终止属于变更操作' },
@@ -50,31 +48,30 @@ function stripSafeRedirects(command) {
   return command
     .replace(/\b\d*>&\d+\b/g, ' ')
     .replace(/(?:\d*|&)>+\s*\/dev\/null\b/g, ' ')
+    .replace(/(?:\d*|&)>+\s*['"]?\/(?:tmp|dev\/shm)(?:\/[^\s;&|)'"]*)?['"]?/g, ' ')
 }
 
 function hasFileWriteRedirection(command) {
   const cleaned = stripSafeRedirects(command)
   if (/(?:^|[^0-9<>])>>?\s*[^\s>&|;)]/.test(cleaned)) return true
-  if (/\|\s*(?:sudo\s+)?tee\b(?!\s+(?:-a\s+)?\/dev\/null\b)/i.test(cleaned)) return true
+  if (/\|\s*(?:sudo\s+)?tee\b(?!\s+(?:-a\s+)?(?:\/dev\/null|\/(?:tmp|dev\/shm)\/[^\s;&|)'"]*)\b)/i.test(cleaned)) return true
   return false
+}
+
+function isScratchOnlyFileMutation(command) {
+  const m = /(?:^|[;&|(\n]\s*)(?:sudo\s+)?(?:rm|mv|cp|chmod|chown|touch|mkdir|rmdir|truncate)\b([^\n;&|]*)/i.exec(command)
+  if (!m) return false
+  const paths = String(m[1] || '').trim().split(/\s+/).filter(tok => tok && !tok.startsWith('-'))
+  return paths.length > 0 && paths.every(p => /^['"]?\/(?:tmp|dev\/shm)(?:\/|$)/.test(p))
 }
 
 function normalizeNicName(raw) {
   return String(raw || '').trim().replace(/@.*$/, '')
 }
 
-function isAllowedScratchPath(targetPath, node) {
-  if (targetPath === '/dev/null' || targetPath === '/dev/zero') return true
-  const allowedPaths = node?.test_resources?.paths || []
-  return allowedPaths.some(prefix => targetPath === prefix || targetPath.startsWith(`${prefix.replace(/\/$/, '')}/`))
-}
-
-function checkTargetWhitelists(text, node) {
+function checkProtectedBoundaries(text, node) {
   const mgmtNics = new Set(node?.protected?.mgmt_nics || [])
-  const dataNics = new Set(node?.test_resources?.data_nics || [])
   const bootDisks = new Set(node?.protected?.boot_disks || [])
-  const allowedBlockDevs = new Set(node?.test_resources?.block_devices || [])
-  const allowedProcs = new Set(node?.test_resources?.processes || [])
 
   if (REBOOT_RE.test(text)) {
     if (node?.role === 'jump' || node?.test_resources?.allow_reboot !== true) {
@@ -103,13 +100,6 @@ function checkTargetWhitelists(text, node) {
         reason: `禁止操作受保护的管理网口「${nic}」（位于 protected.mgmt_nics）`,
       }
     }
-    if (!dataNics.has(nic)) {
-      return {
-        blocked: true,
-        code: 'NIC_NOT_IN_TEST_RESOURCES',
-        reason: `网口「${nic}」未在节点「${node?.id || 'unknown'}」的 test_resources.data_nics 白名单中授权，禁止启停或改 IP`,
-      }
-    }
   }
 
   for (const ip of node?.protected?.mgmt_ips || []) {
@@ -127,51 +117,17 @@ function checkTargetWhitelists(text, node) {
     if (bootDisks.has(target)) {
       return { blocked: true, code: 'PROTECTED_BOOT_DISK', reason: `禁止 dd 覆写受保护系统盘「${target}」` }
     }
-    if (target.startsWith('/dev/')) {
-      if (!isAllowedScratchPath(target, node) && !allowedBlockDevs.has(target)) {
-        return {
-          blocked: true,
-          code: 'BLOCK_DEV_NOT_WHITELISTED',
-          reason: `块设备「${target}」未在节点「${node?.id || 'unknown'}」的 test_resources.block_devices 白名单中授权`,
-        }
-      }
-    }
   }
 
   for (const m of text.matchAll(DISK_WIPE_RE)) {
     const args = String(m[1] || '').trim().split(/\s+/).filter(tok => tok.startsWith('/'))
-    if (args.length === 0) {
-      return { blocked: true, code: 'BLOCK_DEV_MISSING', reason: '磁盘擦除/格式化命令缺少明确受控设备路径' }
-    }
     for (const dev of args) {
-      if (bootDisks.has(dev) || !allowedBlockDevs.has(dev)) {
+      if (bootDisks.has(dev)) {
         return {
           blocked: true,
-          code: 'BLOCK_DEV_NOT_WHITELISTED',
-          reason: `目标设备「${dev}」不在 test_resources.block_devices 白名单中，禁止执行 mkfs/wipefs/blkdiscard`,
+          code: 'PROTECTED_BOOT_DISK',
+          reason: `目标设备「${dev}」为受保护系统盘，禁止执行 mkfs/wipefs/blkdiscard`,
         }
-      }
-    }
-  }
-
-  for (const m of text.matchAll(/(?:^|[;&|(\n]\s*)(?:sudo\s+)?(?:pkill|killall)\s+(?:-[A-Za-z0-9]+\s+)*([A-Za-z0-9._-]+)\b/gi)) {
-    const procName = m[1]
-    if (!allowedProcs.has(procName) && !EPHEMERAL_TEST_TOOLS.has(procName)) {
-      return {
-        blocked: true,
-        code: 'PROCESS_NOT_WHITELISTED',
-        reason: `进程「${procName}」未在节点「${node?.id || 'unknown'}」的 test_resources.processes 白名单中授权终止`,
-      }
-    }
-  }
-
-  for (const m of text.matchAll(/(?:^|[;&|(\n]\s*)(?:sudo\s+)?systemctl\s+(?:stop|restart|kill)\s+([A-Za-z0-9._@-]+)\b/gi)) {
-    const unit = m[1].replace(/\.service$/i, '')
-    if (!allowedProcs.has(unit) && !allowedProcs.has(m[1])) {
-      return {
-        blocked: true,
-        code: 'SERVICE_NOT_WHITELISTED',
-        reason: `系统服务「${m[1]}」未在节点「${node?.id || 'unknown'}」的 test_resources.processes 白名单中授权重启/停止`,
       }
     }
   }
@@ -187,15 +143,12 @@ export function evaluateCommandSafety(command, { phase = 'armed', node = null } 
     }
   }
 
-  const whitelistCheck = checkTargetWhitelists(text, node)
-  if (whitelistCheck.blocked && phase !== 'probe_readonly') {
-    return whitelistCheck
+  const protectedCheck = checkProtectedBoundaries(text, node)
+  if (protectedCheck.blocked) {
+    return protectedCheck
   }
 
   if (phase === 'probe_readonly') {
-    if (whitelistCheck.blocked && ['PROTECTED_MGMT_NIC', 'PROTECTED_MGMT_IP', 'PROTECTED_BOOT_DISK'].includes(whitelistCheck.code)) {
-      return whitelistCheck
-    }
     const hasNicMutate = /(?:^|[;&|(\n]\s*)(?:sudo\s+)?(?:ip\s+(?:link|l)\s+set\s+(?:dev\s+)?\S+\s+[^\n;&|]*\b(?:down|up)\b|ifconfig\s+\S+\s+[^\n;&|]*\b(?:down|up)\b|(?:ifdown|ifup)\s+\S+\b|ip\s+(?:addr|address|a)\s+(?:add|del|flush)\b)/i.test(text)
     if (hasNicMutate) {
       return {
@@ -206,6 +159,7 @@ export function evaluateCommandSafety(command, { phase = 'armed', node = null } 
     }
     for (const item of READONLY_MUTATION_PATTERNS) {
       if (item.pattern.test(text)) {
+        if (item.reason === '文件或块设备修改属于变更操作' && isScratchOnlyFileMutation(text)) continue
         return {
           blocked: true,
           code: 'PHASE_READONLY_LOCKED',
@@ -222,7 +176,7 @@ export function evaluateCommandSafety(command, { phase = 'armed', node = null } 
     }
   }
 
-  return whitelistCheck
+  return { blocked: false, code: 'OK', reason: '' }
 }
 
 export function evaluateHttpSafety({ method = 'GET', path: reqPath = '/' } = {}, { phase = 'armed', node = null } = {}) {

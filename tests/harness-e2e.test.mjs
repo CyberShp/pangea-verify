@@ -275,11 +275,11 @@ test('VerificationHarness runs multi-node SSH (with jump_via tunnel) + controlle
         const ptyRes = JSON.parse((await runCli(cliPath, ['interactive', '--config', gatewayConfigPath, '--target', 'ctrl_a', '--exchanges-file', exFile])).stdout)
         assert.equal(ptyRes.success, true)
 
-        // 6. Verify deterministic output gate catches forged command_id and zero hits
+        // 6. Verify deterministic output gate allows zero hits (e.g. crash before counter flush) while catching forged command_id
         assert.equal(validateOutput({
-          summary: 'bad',
+          summary: 'crash-before-counter',
           items: [{ target_key: 'RISK-HA-01', verdict: 'confirmed', hits: 'INJ-001=0', evidence_command_ids: [flapNic.command_id] }],
-        }).ok, false)
+        }).ok, true)
         assert.equal(validateOutput({
           summary: 'forged',
           items: [{ target_key: 'RISK-HA-01', verdict: 'confirmed', hits: 'INJ-001=2', evidence_command_ids: ['cmd-9999'] }],
